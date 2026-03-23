@@ -38,15 +38,22 @@ else
 fi
 
 # ==========================================
-# 2. 强力洗白与内核兼容性处理 (魔改 wg0.conf)
+# 2. 强力洗白与内核兼容性处理 (防正则误杀版)
 # ==========================================
 
-# 确保在纯 IPv4 Docker 环境下 100% 成功拉起网卡
-# 永远不要假设用户默认启用了 Docker IPv6 网络监听
-sed -i 's/^AllowedIPs.*/AllowedIPs = 0.0.0.0\/0/g' "$WG_CONF"
-sed -i '/Address.*:/d' "$WG_CONF" 
+# 1. 智能提取出纯 IPv4 地址 (防止 wgcf v2.2.30 将双栈 IP 写在同一行导致误杀)
+IPV4_ADDR=$(grep '^Address' "$WG_CONF" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' | head -n 1)
+
+# 2. 物理删除所有原始的 Address, AllowedIPs, DNS，防止 RTNETLINK 崩溃或 DNS 死锁
+sed -i '/^Address/d' "$WG_CONF"
+sed -i '/^AllowedIPs/d' "$WG_CONF"
 sed -i '/^DNS.*/d' "$WG_CONF"
 
+# 3. 重建最纯净的 IPv4 路由规则
+if [ -n "$IPV4_ADDR" ]; then
+    sed -i "/\[Interface\]/a Address = $IPV4_ADDR" "$WG_CONF"
+fi
+sed -i "/\[Peer\]/a AllowedIPs = 0.0.0.0\/0" "$WG_CONF"
 
 # 删除 Alpine 系统自带 wg-quick 中不兼容的路由标记
 sed -i '/src_valid_mark/d' /usr/bin/wg-quick
@@ -71,8 +78,8 @@ echo "==> [MicroWARP] 正在启动 Linux 内核级 wg0 网卡..."
 wg-quick up wg0 > /dev/null 2>&1
 
 echo "==> [MicroWARP] 当前出口 IP 已成功变更为："
-# 获取最新的 CF 溯源 IP (加入 || true 防止网络波动导致脚本退出)
-(curl -s https://1.1.1.1/cdn-cgi/trace | grep ip= || true) &
+# 获取最新的 CF 溯源 IP (加入 5 秒强制超时，完美替代有缺陷的 & 后台执行)
+curl -s -m 5 https://1.1.1.1/cdn-cgi/trace | grep ip= || echo "⚠️ 获取超时 (可能是底层握手延迟或节点被强阻断)"
 
 # ==========================================
 # 4. 启动 C 语言 SOCKS5 代理服务 (带高级参数绑定)
